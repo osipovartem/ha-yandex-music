@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.components.media_player import (
@@ -15,6 +15,7 @@ from homeassistant.components.media_player import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.network import get_url
 from homeassistant.util import dt as dt_util
@@ -35,6 +36,11 @@ from . import YandexMusicCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
+# Yamaha MusicCast briefly transitions through "idle" right after receiving a
+# play command (source switch, buffering).  Ignore idle events that arrive
+# within this window so we don't cycle through the whole queue instantly.
+_PLAY_COOLDOWN_SEC = 8
+
 SUPPORTED_FEATURES = (
     MediaPlayerEntityFeature.PLAY
     | MediaPlayerEntityFeature.PAUSE
@@ -44,6 +50,7 @@ SUPPORTED_FEATURES = (
     | MediaPlayerEntityFeature.PLAY_MEDIA
     | MediaPlayerEntityFeature.BROWSE_MEDIA
     | MediaPlayerEntityFeature.SHUFFLE_SET
+    | MediaPlayerEntityFeature.SEEK
 )
 
 
@@ -54,7 +61,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up Yandex Music media player."""
     coordinator: YandexMusicCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([YandexMusicMediaPlayer(hass, entry, coordinator)], True)
+    async_add_entities([YandexMusicMediaPlayer(hass, entry, coordinator)], False)
 
 
 class YandexMusicMediaPlayer(MediaPlayerEntity):
@@ -62,6 +69,8 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
 
     _attr_has_entity_name = True
     _attr_name = None
+    _attr_should_poll = False   # updates driven by coordinator listener, not HA polling
+    _attr_available = True      # always available while config entry is loaded
     _attr_supported_features = SUPPORTED_FEATURES
     _attr_media_content_type = MediaType.MUSIC
 
@@ -77,12 +86,12 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
         self._coordinator = coordinator
 
         self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, entry.entry_id)},
-            "name": entry.title,
-            "manufacturer": "Yandex",
-            "model": "Yandex Music",
-        }
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=entry.title,
+            manufacturer="Yandex",
+            model="Yandex Music",
+        )
 
         # Playback state
         self._state = MediaPlayerState.IDLE
@@ -90,8 +99,13 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
         self._queue_pos: int = 0
         self._shuffle: bool = False
 
-        # Position tracking (for NaN:NaN fix)
+        # Position / cooldown tracking
         self._play_started_at: datetime | None = None
+        # Timestamp of the last _play_current_track call.
+        # We ignore "idle" events from the target player that arrive within
+        # _PLAY_COOLDOWN_SEC seconds of this — Yamaha briefly flashes "idle"
+        # right after receiving a play command before it starts buffering.
+        self._last_play_command_at: datetime | None = None
 
         # Current station for refilling the queue
         self._current_station_id: str | None = None
@@ -170,7 +184,12 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
     # ------------------------------------------------------------------
 
     async def async_added_to_hass(self) -> None:
-        """Subscribe to target player state changes."""
+        """Subscribe to coordinator updates and target player state changes."""
+        await super().async_added_to_hass()
+        # Listen to coordinator refreshes so the media browser stays current
+        self.async_on_remove(
+            self._coordinator.async_add_listener(self._handle_coordinator_update)
+        )
         self._subscribe_target_listener()
 
     async def async_will_remove_from_hass(self) -> None:
@@ -189,19 +208,39 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
             return
 
         @callback
-        def _on_target_state_change(event):
+        def _on_target_state_change(event) -> None:
+            # Filter by entity_id manually — avoids event_filter compatibility issues
+            if event.data.get("entity_id") != target:
+                return
             new_state = event.data.get("new_state")
             if new_state is None:
                 return
-            if new_state.state == "idle" and self._state == MediaPlayerState.PLAYING:
-                _LOGGER.debug("Target player went idle, advancing queue")
-                self.hass.async_create_task(self._advance_queue())
+            if new_state.state != "idle":
+                return
+            if self._state != MediaPlayerState.PLAYING:
+                return
+            # Cooldown: Yamaha briefly hits "idle" during source switch / buffering.
+            # Skip idle events that arrive too soon after we sent the play command.
+            if self._last_play_command_at is not None:
+                elapsed = (dt_util.utcnow() - self._last_play_command_at).total_seconds()
+                if elapsed < _PLAY_COOLDOWN_SEC:
+                    _LOGGER.debug(
+                        "Ignoring idle from %s (cooldown %.1fs remaining)",
+                        target, _PLAY_COOLDOWN_SEC - elapsed,
+                    )
+                    return
+            _LOGGER.debug("Target player went idle after %.0fs, advancing queue", elapsed if self._last_play_command_at else 0)
+            self.hass.async_create_task(self._advance_queue())
 
         self._unsub_target_listener = self.hass.bus.async_listen(
             "state_changed",
             _on_target_state_change,
-            event_filter=lambda e: e.data.get("entity_id") == target,
         )
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Called by coordinator on every data refresh — just re-render state."""
+        self.async_write_ha_state()
 
     # ------------------------------------------------------------------
     # Playback controls
@@ -247,6 +286,35 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
     async def async_set_shuffle(self, shuffle: bool) -> None:
         """Enable/disable shuffle."""
         self._shuffle = shuffle
+        self.async_write_ha_state()
+
+    async def async_media_seek(self, position: float) -> None:
+        """Seek to position (seconds) in the current track."""
+        track = self._current_track
+        if not track:
+            return
+        duration = self.media_duration
+        position = max(0.0, min(position, duration) if duration else position)
+
+        stream_url = self._build_stream_url(track["id"], seek_seconds=position)
+        target = self._target_player
+        if target:
+            try:
+                await self.hass.services.async_call(
+                    "media_player",
+                    "play_media",
+                    {
+                        "entity_id": target,
+                        "media_content_id": stream_url,
+                        "media_content_type": "music",
+                    },
+                    blocking=True,
+                )
+            except Exception as err:
+                _LOGGER.error("Seek: play_media to %s failed: %s", target, err)
+
+        self._play_started_at = dt_util.utcnow() - timedelta(seconds=position)
+        self._last_play_command_at = dt_util.utcnow()
         self.async_write_ha_state()
 
     # ------------------------------------------------------------------
@@ -334,11 +402,29 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
 
     def _fetch_station_tracks(self, station_id: str, mood_energy: str | None) -> list[dict]:
         """Synchronously fetch tracks from a rotor station."""
-        from yandex_music import StationSettings2
-
         settings = None
         if mood_energy:
-            settings = StationSettings2(mood_energy=mood_energy, diversity="default")
+            try:
+                from yandex_music import StationSettings2
+                settings = StationSettings2(mood_energy=mood_energy, diversity="default")
+            except ImportError:
+                # Older/newer yandex_music builds may expose this class differently
+                try:
+                    import yandex_music as _ym
+                    _cls = getattr(_ym, "StationSettings2", None) or getattr(
+                        getattr(_ym, "models", None), "StationSettings2", None
+                    )
+                    if _cls:
+                        settings = _cls(mood_energy=mood_energy, diversity="default")
+                    else:
+                        _LOGGER.warning(
+                            "StationSettings2 not found in yandex_music — "
+                            "playing station %s without mood filter", station_id
+                        )
+                except Exception:
+                    _LOGGER.warning(
+                        "Cannot apply mood filter for station %s — playing without it", station_id
+                    )
 
         result = self._coordinator.client.rotor_station_tracks(
             station=station_id,
@@ -507,16 +593,25 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
 
         target = self._target_player
         if target:
-            await self.hass.services.async_call(
-                "media_player",
-                "play_media",
-                {
-                    "entity_id": target,
-                    "media_content_id": stream_url,
-                    "media_content_type": "music",
-                },
-                blocking=False,
-            )
+            try:
+                await self.hass.services.async_call(
+                    "media_player",
+                    "play_media",
+                    {
+                        "entity_id": target,
+                        "media_content_id": stream_url,
+                        "media_content_type": "music",
+                    },
+                    blocking=True,
+                )
+                _LOGGER.debug("play_media sent to %s OK", target)
+            except Exception as err:
+                _LOGGER.error(
+                    "play_media to %s failed: %s — "
+                    "if yamaha_musiccast ignores HTTP URLs, add the Yamaha as a "
+                    "dlna_dmr entity and use that as target_player instead.",
+                    target, err,
+                )
         else:
             _LOGGER.warning(
                 "No target_player configured. Set one in integration options. "
@@ -524,24 +619,41 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
                 stream_url,
             )
 
-        self._play_started_at = dt_util.utcnow()
+        now = dt_util.utcnow()
+        self._play_started_at = now
+        self._last_play_command_at = now
         self._state = MediaPlayerState.PLAYING
         self.async_write_ha_state()
 
-    def _build_stream_url(self, track_id: str) -> str:
+    def _build_stream_url(self, track_id: str, seek_seconds: float = 0) -> str:
         """Build a local HTTP proxy URL for the given track_id.
 
-        The URL points to our YandexMusicStreamView which resolves the
-        actual Yandex direct link and proxies the audio bytes.
+        The URL must be reachable by the target device (Yamaha, Chromecast, …)
+        on the local network.  We force HTTP because many DLNA/UPnP renderers
+        cannot verify self-signed HA TLS certificates.
         """
         try:
-            base = get_url(self.hass, allow_internal=True, allow_ip=True)
+            base = get_url(
+                self.hass,
+                allow_internal=True,
+                allow_external=False,
+                allow_ip=True,
+            )
         except Exception:
             base = "http://homeassistant.local:8123"
 
+        # Yamaha MusicCast and most DLNA renderers don't support HTTPS with
+        # a self-signed cert — downgrade to HTTP on the same port.
+        if base.startswith("https://"):
+            base = "http://" + base[8:]
+
         # track_id may contain ":" (e.g. "12345:678") — encode it
         safe_id = track_id.replace(":", "_")
-        return f"{base}/api/yandex_music/stream/{self._entry.entry_id}/{safe_id}"
+        url = f"{base}/api/yandex_music/stream/{self._entry.entry_id}/{safe_id}"
+        if seek_seconds > 0:
+            url += f"?t={int(seek_seconds)}"
+        _LOGGER.info("Stream URL for Yamaha/DLNA: %s", url)
+        return url
 
     async def _send_to_target(self, domain: str, service: str, data: dict) -> None:
         """Call a service on the target media player."""

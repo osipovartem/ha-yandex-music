@@ -6,7 +6,7 @@ This view proxies audio from Yandex through HA's local HTTP server, which
 the Yamaha reaches as a plain LAN stream.
 
 URL pattern:
-  GET /api/yandex_music/stream/{entry_id}/{track_id}
+  GET /api/yandex_music/stream/{entry_id}/{track_id}[?t=<seek_seconds>]
 
 No HA auth required so that Yamaha (and other DLNA renderers) can fetch audio.
 """
@@ -51,9 +51,18 @@ class YandexMusicStreamView(HomeAssistantView):
         # track_id arrives with "_" in place of ":" (URL-safe encoding)
         track_id = track_id.replace("_", ":", 1)  # only first separator
 
+        # Parse optional seek parameter (?t=<seconds>)
+        seek_secs = 0
+        t_param = request.rel_url.query.get("t")
+        if t_param:
+            try:
+                seek_secs = max(0, int(float(t_param)))
+            except ValueError:
+                pass
+
         # Resolve the direct Yandex URL (blocking call in executor)
         try:
-            yandex_url = await hass.async_add_executor_job(
+            yandex_url, bitrate_kbps = await hass.async_add_executor_job(
                 _resolve_url, coordinator.client, track_id
             )
         except Exception as err:
@@ -63,12 +72,17 @@ class YandexMusicStreamView(HomeAssistantView):
         if not yandex_url:
             return web.Response(status=404, text="Track URL not found")
 
-        _LOGGER.debug("Proxying %s → %s", track_id, yandex_url[:80])
+        _LOGGER.debug("Proxying %s → %s (seek=%ds)", track_id, yandex_url[:80], seek_secs)
 
-        # Forward Range header if the client (Yamaha) is seeking
+        # Forward Range header if the client (Yamaha) is seeking.
+        # If seek_secs is set (from ?t= param), calculate byte offset instead.
         headers = {}
         if "Range" in request.headers:
             headers["Range"] = request.headers["Range"]
+        elif seek_secs > 0:
+            # Approximate byte offset: bitrate_kbps * 125 bytes/sec (1000/8)
+            byte_offset = seek_secs * bitrate_kbps * 125
+            headers["Range"] = f"bytes={int(byte_offset)}-"
 
         try:
             async with aiohttp.ClientSession() as session:
@@ -77,10 +91,28 @@ class YandexMusicStreamView(HomeAssistantView):
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=None, connect=10),
                 ) as upstream:
+                    _LOGGER.info(
+                        "Upstream response: status=%s Content-Type=%s Content-Length=%s",
+                        upstream.status,
+                        upstream.headers.get("Content-Type", "—"),
+                        upstream.headers.get("Content-Length", "—"),
+                    )
                     response_headers = {
-                        "Content-Type": upstream.headers.get("Content-Type", "audio/mpeg"),
+                        # Force audio/mpeg — Yamaha may reject other content types
+                        "Content-Type": "audio/mpeg",
                         "Accept-Ranges": "bytes",
                         "Cache-Control": "no-cache",
+                        # DLNA headers — required by Yamaha MusicCast and most
+                        # UPnP/DLNA renderers to recognise the stream as playable.
+                        # PN=MP3  → explicit DLNA profile (required by Yamaha)
+                        # OP=01   → byte-range seeking supported
+                        # CI=0    → no transcoding
+                        # FLAGS   → streaming transfer mode
+                        "transferMode.dlna.org": "Streaming",
+                        "contentFeatures.dlna.org": (
+                            "DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;DLNA.ORG_CI=0;"
+                            "DLNA.ORG_FLAGS=01700000000000000000000000000000"
+                        ),
                     }
                     if "Content-Length" in upstream.headers:
                         response_headers["Content-Length"] = upstream.headers["Content-Length"]
@@ -107,15 +139,18 @@ class YandexMusicStreamView(HomeAssistantView):
             return web.Response(status=502, text="Stream error")
 
 
-def _resolve_url(client, track_id: str) -> str | None:
-    """Synchronously resolve a direct MP3 URL for the given track_id."""
+def _resolve_url(client, track_id: str) -> tuple[str | None, int]:
+    """Synchronously resolve a direct MP3 URL. Returns (url, bitrate_kbps)."""
     tracks = client.tracks([track_id])
     if not tracks:
-        return None
+        return None, 0
     track = tracks[0]
     infos = track.get_download_info(get_direct_links=True)
     if not infos:
-        return None
+        return None, 0
     mp3 = [i for i in infos if getattr(i, "codec", "") == "mp3"]
     best = sorted(mp3 or infos, key=lambda i: getattr(i, "bitrate_in_kbps", 0), reverse=True)
-    return best[0].direct_link if best else None
+    if not best:
+        return None, 0
+    info = best[0]
+    return info.direct_link, getattr(info, "bitrate_in_kbps", 128)
