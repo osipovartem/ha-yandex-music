@@ -1,0 +1,12 @@
+{
+  "domain": "yandex_music",
+  "name": "Yandex Music",
+  "version": "1.0.0",
+  "documentation": "https://github.com/osipovartem/ha-yandex-music",
+  "issue_tracker": "https://github.com/osipovartem/ha-yandex-music/issues",
+  "codeowners": ["@osipovartem"],
+  "requirements": ["yandex-music>=2.2.0"],
+  "iot_class": "cloud_polling",
+  "config_flow": true,
+  "integration_type": "service"
+}
