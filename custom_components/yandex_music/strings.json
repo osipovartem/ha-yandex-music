@@ -2,31 +2,31 @@
   "config": {
     "step": {
       "user": {
-        "title": "Подключение к Яндекс Музыке",
-        "description": "Введите токен авторизации Яндекс Музыки.\n\nКак получить токен: [инструкция]({token_help})",
+        "title": "Connect to Yandex Music",
+        "description": "Enter your Yandex Music authorization token.\n\nHow to get a token: [instructions]({token_help})",
         "data": {
-          "token": "Токен Яндекс Музыки"
+          "token": "Yandex Music token"
         }
       }
     },
     "error": {
-      "cannot_connect": "Не удалось подключиться к Яндекс Музыке. Проверьте токен."
+      "cannot_connect": "Could not connect to Yandex Music. Check the token."
     },
     "abort": {
-      "already_configured": "Этот аккаунт Яндекс Музыки уже добавлен."
+      "already_configured": "This Yandex Music account is already configured."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Настройки Яндекс Музыки",
+        "title": "Yandex Music settings",
         "data": {
-          "target_player": "Медиаплеер для воспроизведения",
-          "default_station": "Станция по умолчанию"
+          "target_player": "Target media player",
+          "default_station": "Default station"
         },
         "data_description": {
-          "target_player": "Устройство, на которое будет отправляться музыка (Chromecast, Sonos, Яндекс Станция и т.д.)",
-          "default_station": "Станция, которая запустится при команде 'включи музыку'"
+          "target_player": "Device that will play the music stream (Chromecast, Sonos, Yandex Station, and others)",
+          "default_station": "Station started by the play or turn-on command"
         }
       }
     }

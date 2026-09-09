@@ -1,136 +1,160 @@
-# Yandex Music для Home Assistant
+<p align="center">
+  <img src="custom_components/yandex_music/brand/icon@2x.png" width="160" alt="Yandex Music for Home Assistant icon">
+</p>
 
-HACS-интеграция, которая добавляет Яндекс Музыку в Home Assistant как источник медиа с управлением очередью треков.
+# Yandex Music for Home Assistant
 
-## Возможности
+**English** | [Русский](README.ru.md)
 
-- Браузер медиа: плейлисты, станции по настроению, любимые треки
-- Режимы воспроизведения: Спокойное, Без слов (инструментал), Энергичное, Моя волна
-- Управление очередью: автоматическая загрузка следующих треков со станции
-- Делегирование воспроизведения на любой медиаплеер в HA (Chromecast, Sonos, Яндекс Станция и др.)
-- Интеграция с автоматизациями HA и голосовыми командами Алисы
+An unofficial HACS integration that plays Yandex Music on a selected Home Assistant media player and manages the track queue.
 
----
+> This project is not affiliated with or endorsed by Yandex.
 
-## Установка через HACS
+## Features
 
-1. Откройте HACS → **Интеграции** → меню (три точки) → **Пользовательские репозитории**
-2. Добавьте репозиторий: `https://github.com/osipovartem/ha-yandex-music`
-3. Тип: **Интеграция**
-4. Найдите **Yandex Music** в HACS и установите
-5. Перезапустите Home Assistant
+- Media browser with mood stations, personal playlists, and liked tracks
+- Delegated playback on any Home Assistant player that accepts HTTP music URLs
+- Automatic station queue refill
+- Play, pause, stop, seek, shuffle, next, and previous controls
+- Default station for simple play/turn-on commands
+- Alice voice control through the [Yandex Smart Home](https://github.com/dext0r/yandex_smart_home) integration
+- Immediate proxy shutdown when playback is stopped or the target player is turned off
 
-## Установка вручную
+## Requirements
 
-Скопируйте папку `custom_components/yandex_music/` в директорию `/config/custom_components/` вашего Home Assistant, затем перезапустите.
+- Home Assistant 2023.1 or newer
+- A Yandex Music account and OAuth token
+- A target `media_player` reachable from Home Assistant
+- Home Assistant 2026.3 or newer to display the bundled local integration icon
 
----
+## Installation with HACS
 
-## Получение токена
+1. Open **HACS → Integrations**.
+2. Open the three-dot menu and select **Custom repositories**.
+3. Add `https://github.com/osipovartem/ha-yandex-music` as an **Integration** repository.
+4. Find **Yandex Music**, install it, and restart Home Assistant.
 
-Токен — это строка авторизации, которая позволяет компоненту получать доступ к вашей библиотеке Яндекс Музыки.
+### Manual installation
 
-### Способ 1: через браузер (рекомендуется)
+Copy `custom_components/yandex_music/` to `/config/custom_components/yandex_music/` and restart Home Assistant.
 
-1. Откройте браузер и войдите в [passport.yandex.ru](https://passport.yandex.ru)
-2. Перейдите по ссылке:
-   ```
+## Getting a token
+
+The token gives the integration access to your Yandex Music library. Treat it like a password: do not commit it or paste it into an issue.
+
+1. Sign in at [passport.yandex.ru](https://passport.yandex.ru).
+2. Open this OAuth authorization URL:
+
+   ```text
    https://oauth.yandex.ru/authorize?response_type=token&client_id=23cabbbdc6cd418abb4b39c32c41195d
    ```
-3. Нажмите **Разрешить**
-4. Скопируйте токен из адресной строки (параметр `access_token=...`)
 
-### Способ 2: через Python
+3. Approve access.
+4. Copy the value of `access_token` from the redirected URL.
 
-```python
-from yandex_music import Client
-# Если у вас есть токен напрямую от Яндекс.Паспорта, используйте его
-client = Client("ВАШ_ТОКЕН").init()
-print(client.account_status().account.login)
-```
+## Configuration
 
----
+1. Open **Settings → Devices & services → Add integration → Yandex Music**.
+2. Enter the token.
+3. Open **Configure** for the installed integration and set:
+   - **Target media player** — the speaker or receiver that will play the stream.
+   - **Default station** — the station started by Play, Turn on, or Alice's “turn on music” command.
 
-## Настройка
+The integration creates a virtual entity such as `media_player.yandex_music`. Send commands to this virtual entity; it delegates audio to the configured target player.
 
-1. Перейдите: **Настройки → Устройства и службы → Добавить интеграцию → Yandex Music**
-2. Введите токен
-3. После добавления перейдите в **Настройки** интеграции и укажите:
-   - **Медиаплеер для воспроизведения** — устройство, на которое будет отправляться музыка
-   - **Станция по умолчанию** — музыка, которая будет играть при команде «включи музыку»
+## Usage
 
----
+### Media browser
 
-## Использование
+Open **Browse media** on the Yandex Music entity. Available sources include:
 
-### Медиа браузер
+- My Wave (`station:onyourwave`)
+- Calm (`station:calm`)
+- Instrumental (`station:wordless`)
+- Energetic (`station:energetic`)
+- Personal playlists
+- Liked tracks
 
-В карточке медиаплеера нажмите **Обзор медиа**. Вы увидите:
-
-```
-Yandex Music
-├── Станции и настроение
-│   ├── Моя волна
-│   ├── Спокойное
-│   ├── Без слов
-│   └── Энергичное
-├── Мои плейлисты
-│   └── ...
-└── Мне нравится
-```
-
-### Сервис play_media в автоматизациях
+### Play a station
 
 ```yaml
-service: media_player.play_media
+action: media_player.play_media
 target:
   entity_id: media_player.yandex_music
 data:
   media_content_type: station
-  media_content_id: "station:calm"        # Спокойное
-  # media_content_id: "station:wordless"  # Без слов
-  # media_content_id: "station:energetic" # Энергичное
-  # media_content_id: "station:onyourwave" # Моя волна
+  media_content_id: "station:calm"
 ```
 
-### Плейлист по ID
+Other supported IDs:
 
 ```yaml
-media_content_id: "playlist:123456:3"    # uid:kind
-```
+# Personal playlist (uid:kind)
+media_content_id: "playlist:123456:3"
 
-### Любимые треки
-
-```yaml
+# Liked tracks
 media_content_id: "liked:tracks"
+
+# A raw Yandex Music station ID
+media_content_id: "station_id:user:onyourwave"
 ```
 
----
-
-## Автоматизация с Алисой
-
-Для запуска музыки голосовой командой через Алису:
+### Playback controls
 
 ```yaml
-automation:
-  - alias: "Алиса: Включи спокойную музыку"
-    trigger:
-      - platform: state
-        entity_id: input_text.alice_command   # или другой триггер от Алисы
-        to: "включи спокойную музыку"
-    action:
-      - service: media_player.play_media
-        target:
-          entity_id: media_player.yandex_music
-        data:
-          media_content_type: station
-          media_content_id: "station:calm"
+# Stop playback and close the active proxy stream
+action: media_player.media_stop
+target:
+  entity_id: media_player.yandex_music
+
+# Next track
+action: media_player.media_next_track
+target:
+  entity_id: media_player.yandex_music
+
+# Previous track
+action: media_player.media_previous_track
+target:
+  entity_id: media_player.yandex_music
 ```
 
-> Подробнее о настройке интеграции с Алисой через [YandexSmartHome](https://github.com/dmitry-k/yandex_smart_home) или Webhook.
+Turning off the virtual player also stops playback, but does not power down the physical target speaker.
 
----
+## Alice voice control
 
-## Лицензия
+Expose the virtual Yandex Music entity through Yandex Smart Home. Its next/previous and on/off features are advertised by the entity itself. If you configure features explicitly, use:
 
-MIT License. Это неофициальный компонент, не связанный с Яндексом.
+```yaml
+yandex_smart_home:
+  entity_config:
+    media_player.yandex_music:
+      name: Яндекс музыка
+      features:
+        - turn_on_off
+        - play_pause
+        - next_previous_track
+        - play_media
+      support_set_channel: false
+```
+
+After changing the configuration, restart Home Assistant and update the device list in the Yandex smart-home app. Example phrases (the exact wording can depend on the room and entity name):
+
+- “Алиса, включи Яндекс музыку”
+- “Алиса, выключи Яндекс музыку”
+- “Алиса, следующий трек на Яндекс музыке”
+- “Алиса, предыдущий трек на Яндекс музыке”
+
+## Troubleshooting
+
+- The target player must accept `media_player.play_media` with an HTTP URL. For some receivers, a DLNA DMR entity works better than a vendor-specific entity.
+- The target device must be able to reach Home Assistant's internal URL and port.
+- If an external stop is reported as `idle` before the expected end of the track, the integration treats it as a stop and closes the proxy. Near the natural end of a track, `idle` advances the queue.
+- Stream URLs use short-lived random session tokens. Stopping or changing tracks immediately invalidates the previous URL.
+
+## Issues and security
+
+Bug reports and feature requests are welcome in [GitHub Issues](https://github.com/osipovartem/ha-yandex-music/issues). Remove tokens, private URLs, and personal data from logs before posting. For a security problem, follow [SECURITY.md](SECURITY.md).
+
+## License
+
+[MIT](LICENSE)

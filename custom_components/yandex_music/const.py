@@ -2,6 +2,8 @@
 
 DOMAIN = "yandex_music"
 
+DATA_STREAM_MANAGER = "stream_manager"
+
 CONF_TOKEN = "token"
 CONF_TARGET_PLAYER = "target_player"
 CONF_DEFAULT_STATION = "default_station"

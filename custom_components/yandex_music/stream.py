@@ -6,9 +6,10 @@ This view proxies audio from Yandex through HA's local HTTP server, which
 the Yamaha reaches as a plain LAN stream.
 
 URL pattern:
-  GET /api/yandex_music/stream/{entry_id}/{track_id}[?t=<seek_seconds>]
+  GET /api/yandex_music/stream/{entry_id}/{track_id}?session=<token>[&t=<seconds>]
 
-No HA auth required so that Yamaha (and other DLNA renderers) can fetch audio.
+No HA auth is required because DLNA renderers cannot send HA credentials.
+Each URL is protected by a short-lived playback session token instead.
 """
 from __future__ import annotations
 
@@ -21,7 +22,8 @@ from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN
+from .const import DATA_STREAM_MANAGER, DOMAIN
+from .stream_manager import YandexMusicStreamManager
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,6 +50,40 @@ class YandexMusicStreamView(HomeAssistantView):
         if coordinator is None:
             return web.Response(status=404, text="Integration not found")
 
+        stream_manager: YandexMusicStreamManager | None = hass.data.get(
+            DOMAIN, {}
+        ).get(DATA_STREAM_MANAGER)
+        token = request.rel_url.query.get("session", "")
+        task = asyncio.current_task()
+        if (
+            stream_manager is None
+            or task is None
+            or not stream_manager.register(entry_id, token, task)
+        ):
+            return web.Response(status=410, text="Stream session expired")
+
+        try:
+            return await self._stream(
+                request,
+                coordinator,
+                stream_manager,
+                token,
+                entry_id,
+                track_id,
+            )
+        finally:
+            stream_manager.unregister(entry_id, task)
+
+    async def _stream(
+        self,
+        request: web.Request,
+        coordinator,
+        stream_manager: YandexMusicStreamManager,
+        token: str,
+        entry_id: str,
+        track_id: str,
+    ) -> web.StreamResponse:
+        """Resolve and proxy one active stream session."""
         # track_id arrives with "_" in place of ":" (URL-safe encoding)
         track_id = track_id.replace("_", ":", 1)  # only first separator
 
@@ -62,6 +98,7 @@ class YandexMusicStreamView(HomeAssistantView):
 
         # Resolve the direct Yandex URL (blocking call in executor)
         try:
+            hass: HomeAssistant = request.app["hass"]
             yandex_url, bitrate_kbps = await hass.async_add_executor_job(
                 _resolve_url, coordinator.client, track_id
             )
@@ -72,7 +109,12 @@ class YandexMusicStreamView(HomeAssistantView):
         if not yandex_url:
             return web.Response(status=404, text="Track URL not found")
 
-        _LOGGER.debug("Proxying %s → %s (seek=%ds)", track_id, yandex_url[:80], seek_secs)
+        _LOGGER.debug(
+            "Proxying %s → %s (seek=%ds)",
+            track_id,
+            yandex_url[:80],
+            seek_secs,
+        )
 
         # Forward Range header if the client (Yamaha) is seeking.
         # If seek_secs is set (from ?t= param), calculate byte offset instead.
@@ -92,7 +134,8 @@ class YandexMusicStreamView(HomeAssistantView):
                     timeout=aiohttp.ClientTimeout(total=None, connect=10),
                 ) as upstream:
                     _LOGGER.info(
-                        "Upstream response: status=%s Content-Type=%s Content-Length=%s",
+                        "Upstream response: status=%s Content-Type=%s "
+                        "Content-Length=%s",
                         upstream.status,
                         upstream.headers.get("Content-Type", "—"),
                         upstream.headers.get("Content-Length", "—"),
@@ -115,9 +158,13 @@ class YandexMusicStreamView(HomeAssistantView):
                         ),
                     }
                     if "Content-Length" in upstream.headers:
-                        response_headers["Content-Length"] = upstream.headers["Content-Length"]
+                        response_headers["Content-Length"] = upstream.headers[
+                            "Content-Length"
+                        ]
                     if "Content-Range" in upstream.headers:
-                        response_headers["Content-Range"] = upstream.headers["Content-Range"]
+                        response_headers["Content-Range"] = upstream.headers[
+                            "Content-Range"
+                        ]
 
                     resp = web.StreamResponse(
                         status=upstream.status,
@@ -126,13 +173,19 @@ class YandexMusicStreamView(HomeAssistantView):
                     await resp.prepare(request)
 
                     async for chunk in upstream.content.iter_chunked(_CHUNK):
+                        if not stream_manager.is_active(entry_id, token):
+                            break
                         await resp.write(chunk)
 
                     await resp.write_eof()
                     return resp
 
         except asyncio.CancelledError:
-            # Client disconnected — normal
+            # Client disconnected or playback was stopped — both are normal.
+            _LOGGER.debug("Stream session stopped for %s", track_id)
+
+            # Re-raising lets aiohttp close the downstream response and the
+            # ClientSession context close the upstream Yandex connection.
             raise
         except Exception as err:
             _LOGGER.error("Streaming error for %s: %s", track_id, err)
@@ -149,7 +202,11 @@ def _resolve_url(client, track_id: str) -> tuple[str | None, int]:
     if not infos:
         return None, 0
     mp3 = [i for i in infos if getattr(i, "codec", "") == "mp3"]
-    best = sorted(mp3 or infos, key=lambda i: getattr(i, "bitrate_in_kbps", 0), reverse=True)
+    best = sorted(
+        mp3 or infos,
+        key=lambda i: getattr(i, "bitrate_in_kbps", 0),
+        reverse=True,
+    )
     if not best:
         return None, 0
     info = best[0]

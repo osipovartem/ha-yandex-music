@@ -5,6 +5,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Any
+from urllib.parse import urlencode
 
 from homeassistant.components.media_player import (
     BrowseMedia,
@@ -20,9 +21,11 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.network import get_url
 from homeassistant.util import dt as dt_util
 
+from . import YandexMusicCoordinator
 from .const import (
     CONF_DEFAULT_STATION,
     CONF_TARGET_PLAYER,
+    DATA_STREAM_MANAGER,
     DEFAULT_STATION,
     DOMAIN,
     MEDIA_TYPE_LIKED,
@@ -32,7 +35,7 @@ from .const import (
     PLACEHOLDER_IMAGE,
     PREDEFINED_STATIONS,
 )
-from . import YandexMusicCoordinator
+from .stream_manager import YandexMusicStreamManager
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,6 +43,8 @@ _LOGGER = logging.getLogger(__name__)
 # play command (source switch, buffering).  Ignore idle events that arrive
 # within this window so we don't cycle through the whole queue instantly.
 _PLAY_COOLDOWN_SEC = 8
+_IDLE_DEBOUNCE_SEC = 1
+_TRACK_END_TOLERANCE_SEC = 5
 
 SUPPORTED_FEATURES = (
     MediaPlayerEntityFeature.PLAY
@@ -51,6 +56,8 @@ SUPPORTED_FEATURES = (
     | MediaPlayerEntityFeature.BROWSE_MEDIA
     | MediaPlayerEntityFeature.SHUFFLE_SET
     | MediaPlayerEntityFeature.SEEK
+    | MediaPlayerEntityFeature.TURN_ON
+    | MediaPlayerEntityFeature.TURN_OFF
 )
 
 
@@ -106,6 +113,7 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
         # _PLAY_COOLDOWN_SEC seconds of this — Yamaha briefly flashes "idle"
         # right after receiving a play command before it starts buffering.
         self._last_play_command_at: datetime | None = None
+        self._control_generation = 0
 
         # Current station for refilling the queue
         self._current_station_id: str | None = None
@@ -113,6 +121,7 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
 
         # Target media player entity_id
         self._unsub_target_listener = None
+        self._idle_check_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -196,6 +205,9 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
         """Unsubscribe from state changes."""
         if self._unsub_target_listener:
             self._unsub_target_listener()
+        self._new_control_generation()
+        self._stream_manager.stop(self._entry.entry_id)
+        await super().async_will_remove_from_hass()
 
     def _subscribe_target_listener(self) -> None:
         """Set up listener for target media player state changes."""
@@ -216,21 +228,44 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
             if new_state is None:
                 return
             if new_state.state != "idle":
-                return
+                self._cancel_idle_check()
             if self._state != MediaPlayerState.PLAYING:
+                return
+            if new_state.state in {"off", "unavailable", "unknown"}:
+                _LOGGER.debug(
+                    "Target player %s became %s; stopping proxy stream",
+                    target,
+                    new_state.state,
+                )
+                self._stop_local(
+                    MediaPlayerState.OFF
+                    if new_state.state == "off"
+                    else MediaPlayerState.IDLE
+                )
+                return
+            if new_state.state != "idle":
                 return
             # Cooldown: Yamaha briefly hits "idle" during source switch / buffering.
             # Skip idle events that arrive too soon after we sent the play command.
             if self._last_play_command_at is not None:
-                elapsed = (dt_util.utcnow() - self._last_play_command_at).total_seconds()
+                elapsed = (
+                    dt_util.utcnow() - self._last_play_command_at
+                ).total_seconds()
                 if elapsed < _PLAY_COOLDOWN_SEC:
+                    delay = _PLAY_COOLDOWN_SEC - elapsed + _IDLE_DEBOUNCE_SEC
                     _LOGGER.debug(
-                        "Ignoring idle from %s (cooldown %.1fs remaining)",
-                        target, _PLAY_COOLDOWN_SEC - elapsed,
+                        "Delaying idle check for %s (cooldown %.1fs remaining)",
+                        target,
+                        _PLAY_COOLDOWN_SEC - elapsed,
                     )
+                    self._schedule_idle_check(target, delay)
                     return
-            _LOGGER.debug("Target player went idle after %.0fs, advancing queue", elapsed if self._last_play_command_at else 0)
-            self.hass.async_create_task(self._advance_queue())
+            generation = self._control_generation
+            self._schedule_idle_check(
+                target,
+                _IDLE_DEBOUNCE_SEC,
+                generation,
+            )
 
         self._unsub_target_listener = self.hass.bus.async_listen(
             "state_changed",
@@ -246,13 +281,26 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
     # Playback controls
     # ------------------------------------------------------------------
 
+    async def async_turn_on(self) -> None:
+        """Start the default station, including from Alice on/off commands."""
+        default = self._entry.options.get(CONF_DEFAULT_STATION, DEFAULT_STATION)
+        await self.async_play_media(
+            media_type=MEDIA_TYPE_STATION,
+            media_id=f"station:{default}",
+        )
+
+    async def async_turn_off(self) -> None:
+        """Stop playback without powering down the delegated speaker."""
+        self._stop_local(MediaPlayerState.OFF)
+        await self._send_to_target("media_player", "media_stop", {})
+
     async def async_media_play(self) -> None:
         """Resume playback."""
         if self._state == MediaPlayerState.PAUSED and self._current_track:
             await self._send_to_target("media_player", "media_play", {})
             self._state = MediaPlayerState.PLAYING
             self.async_write_ha_state()
-        elif self._state == MediaPlayerState.IDLE:
+        elif self._state in (MediaPlayerState.IDLE, MediaPlayerState.OFF):
             # Play default station
             default = self._entry.options.get(CONF_DEFAULT_STATION, DEFAULT_STATION)
             await self.async_play_media(
@@ -268,19 +316,20 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
 
     async def async_media_stop(self) -> None:
         """Stop playback."""
+        self._stop_local(MediaPlayerState.IDLE)
         await self._send_to_target("media_player", "media_stop", {})
-        self._state = MediaPlayerState.IDLE
-        self.async_write_ha_state()
 
     async def async_media_next_track(self) -> None:
         """Skip to next track."""
-        await self._advance_queue()
+        generation = self._new_control_generation()
+        await self._advance_queue(generation)
 
     async def async_media_previous_track(self) -> None:
         """Go to previous track."""
+        generation = self._new_control_generation()
         if self._queue_pos > 0:
             self._queue_pos -= 1
-            await self._play_current_track()
+            await self._play_current_track(generation)
         self.async_write_ha_state()
 
     async def async_set_shuffle(self, shuffle: bool) -> None:
@@ -296,22 +345,34 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
         duration = self.media_duration
         position = max(0.0, min(position, duration) if duration else position)
 
-        stream_url = self._build_stream_url(track["id"], seek_seconds=position)
+        generation = self._new_control_generation()
+        session = self._stream_manager.start(self._entry.entry_id)
+        stream_url = self._build_stream_url(
+            track["id"], session, seek_seconds=position
+        )
         target = self._target_player
-        if target:
-            try:
-                await self.hass.services.async_call(
-                    "media_player",
-                    "play_media",
-                    {
-                        "entity_id": target,
-                        "media_content_id": stream_url,
-                        "media_content_type": "music",
-                    },
-                    blocking=True,
-                )
-            except Exception as err:
-                _LOGGER.error("Seek: play_media to %s failed: %s", target, err)
+        if not target:
+            self._stream_manager.stop(self._entry.entry_id)
+            return
+        try:
+            await self.hass.services.async_call(
+                "media_player",
+                "play_media",
+                {
+                    "entity_id": target,
+                    "media_content_id": stream_url,
+                    "media_content_type": "music",
+                },
+                blocking=True,
+            )
+        except Exception as err:
+            _LOGGER.error("Seek: play_media to %s failed: %s", target, err)
+            self._stream_manager.stop(self._entry.entry_id)
+            return
+
+        if generation != self._control_generation:
+            self._stream_manager.stop(self._entry.entry_id)
+            return
 
         self._play_started_at = dt_util.utcnow() - timedelta(seconds=position)
         self._last_play_command_at = dt_util.utcnow()
@@ -331,7 +392,7 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
 
         media_id formats:
           station:<station_key>           — predefined station (e.g. "station:calm")
-          station_id:<raw_station_id>     — raw station id (e.g. "station_id:user:onyourwave")
+          station_id:<raw_station_id>     — raw station id
           playlist:<uid>:<kind>           — user playlist
           liked:tracks                    — liked tracks
           track:<track_id>                — single track
@@ -339,36 +400,42 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
         _LOGGER.debug("play_media called: type=%s id=%s", media_type, media_id)
 
         if media_id.startswith("station:"):
+            generation = self._new_control_generation()
             station_key = media_id[len("station:"):]
             station_cfg = PREDEFINED_STATIONS.get(station_key)
             if station_cfg:
                 await self._load_station(
                     station_cfg["station_id"],
                     station_cfg["mood_energy"],
+                    generation,
                 )
             else:
                 _LOGGER.warning("Unknown station key: %s", station_key)
             return
 
         if media_id.startswith("station_id:"):
+            generation = self._new_control_generation()
             raw_id = media_id[len("station_id:"):]
-            await self._load_station(raw_id, None)
+            await self._load_station(raw_id, None, generation)
             return
 
         if media_id.startswith("playlist:"):
+            generation = self._new_control_generation()
             parts = media_id[len("playlist:"):].split(":")
             if len(parts) == 2:
                 uid, kind = int(parts[0]), int(parts[1])
-                await self._load_playlist(uid, kind)
+                await self._load_playlist(uid, kind, generation)
             return
 
         if media_id.startswith("liked:"):
-            await self._load_liked_tracks()
+            generation = self._new_control_generation()
+            await self._load_liked_tracks(generation)
             return
 
         if media_id.startswith("track:"):
+            generation = self._new_control_generation()
             track_id = media_id[len("track:"):]
-            await self._play_single_track(track_id)
+            await self._play_single_track(track_id, generation)
             return
 
         _LOGGER.warning("Unrecognised media_id: %s", media_id)
@@ -377,7 +444,12 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
     # Loading sources
     # ------------------------------------------------------------------
 
-    async def _load_station(self, station_id: str, mood_energy: str | None) -> None:
+    async def _load_station(
+        self,
+        station_id: str,
+        mood_energy: str | None,
+        generation: int,
+    ) -> None:
         """Load tracks from a rotor station and start playback."""
         self._current_station_id = station_id
         self._current_station_mood = mood_energy
@@ -389,6 +461,8 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
             _LOGGER.error("Failed to load station %s: %s", station_id, err)
             return
 
+        if generation != self._control_generation:
+            return
         if not tracks:
             _LOGGER.warning("No tracks returned for station %s", station_id)
             return
@@ -398,15 +472,22 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
         if self._shuffle:
             import random
             random.shuffle(self._queue)
-        await self._play_current_track()
+        await self._play_current_track(generation)
 
-    def _fetch_station_tracks(self, station_id: str, mood_energy: str | None) -> list[dict]:
+    def _fetch_station_tracks(
+        self,
+        station_id: str,
+        mood_energy: str | None,
+    ) -> list[dict]:
         """Synchronously fetch tracks from a rotor station."""
         settings = None
         if mood_energy:
             try:
                 from yandex_music import StationSettings2
-                settings = StationSettings2(mood_energy=mood_energy, diversity="default")
+                settings = StationSettings2(
+                    mood_energy=mood_energy,
+                    diversity="default",
+                )
             except ImportError:
                 # Older/newer yandex_music builds may expose this class differently
                 try:
@@ -419,11 +500,14 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
                     else:
                         _LOGGER.warning(
                             "StationSettings2 not found in yandex_music — "
-                            "playing station %s without mood filter", station_id
+                            "playing station %s without mood filter",
+                            station_id,
                         )
                 except Exception:
                     _LOGGER.warning(
-                        "Cannot apply mood filter for station %s — playing without it", station_id
+                        "Cannot apply mood filter for station %s — "
+                        "playing without it",
+                        station_id,
                     )
 
         result = self._coordinator.client.rotor_station_tracks(
@@ -443,7 +527,7 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
             tracks.append(_track_to_dict(track))
         return tracks
 
-    async def _load_playlist(self, uid: int, kind: int) -> None:
+    async def _load_playlist(self, uid: int, kind: int, generation: int) -> None:
         """Load tracks from a user playlist."""
         try:
             tracks = await self.hass.async_add_executor_job(
@@ -453,7 +537,7 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
             _LOGGER.error("Failed to load playlist %s:%s: %s", uid, kind, err)
             return
 
-        if not tracks:
+        if generation != self._control_generation or not tracks:
             return
 
         self._current_station_id = None
@@ -462,7 +546,7 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
         if self._shuffle:
             import random
             random.shuffle(self._queue)
-        await self._play_current_track()
+        await self._play_current_track(generation)
 
     def _fetch_playlist_tracks(self, uid: int, kind: int) -> list[dict]:
         """Synchronously fetch playlist tracks."""
@@ -478,7 +562,7 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
                 tracks.append(_track_to_dict(track))
         return tracks
 
-    async def _load_liked_tracks(self) -> None:
+    async def _load_liked_tracks(self, generation: int) -> None:
         """Load liked tracks."""
         try:
             tracks = await self.hass.async_add_executor_job(self._fetch_liked_tracks)
@@ -486,7 +570,7 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
             _LOGGER.error("Failed to load liked tracks: %s", err)
             return
 
-        if not tracks:
+        if generation != self._control_generation or not tracks:
             return
 
         self._current_station_id = None
@@ -495,7 +579,7 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
         if self._shuffle:
             import random
             random.shuffle(self._queue)
-        await self._play_current_track()
+        await self._play_current_track(generation)
 
     def _fetch_liked_tracks(self) -> list[dict]:
         """Synchronously fetch liked tracks."""
@@ -505,7 +589,7 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
         track_shorts = liked.fetch_tracks()
         return [_track_to_dict(t) for t in track_shorts if t]
 
-    async def _play_single_track(self, track_id: str) -> None:
+    async def _play_single_track(self, track_id: str, generation: int) -> None:
         """Play a single track by id."""
         self._queue = []
         self._queue_pos = 0
@@ -517,9 +601,11 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
             _LOGGER.error("Failed to fetch track %s: %s", track_id, err)
             return
 
+        if generation != self._control_generation:
+            return
         if track_info:
             self._queue = [track_info]
-            await self._play_current_track()
+            await self._play_current_track(generation)
 
     def _fetch_track_info(self, track_id: str) -> dict | None:
         """Synchronously fetch a single track."""
@@ -532,10 +618,16 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
     # Queue management
     # ------------------------------------------------------------------
 
-    async def _advance_queue(self) -> None:
+    async def _advance_queue(self, generation: int | None = None) -> None:
         """Move to the next track, refilling from station if needed."""
+        if generation is None:
+            generation = self._control_generation
+        if generation != self._control_generation:
+            return
         if not self._queue:
+            self._stream_manager.stop(self._entry.entry_id)
             self._state = MediaPlayerState.IDLE
+            self._play_started_at = None
             self.async_write_ha_state()
             return
 
@@ -546,18 +638,22 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
             self._current_station_id
             and self._queue_pos >= len(self._queue) - 3
         ):
-            asyncio.ensure_future(self._refill_station_queue())
+            self.hass.async_create_task(self._refill_station_queue())
 
         if self._queue_pos >= len(self._queue):
             if self._current_station_id:
                 # Wait briefly for refill
                 await asyncio.sleep(1)
+            if generation != self._control_generation:
+                return
             if self._queue_pos >= len(self._queue):
+                self._stream_manager.stop(self._entry.entry_id)
                 self._state = MediaPlayerState.IDLE
+                self._play_started_at = None
                 self.async_write_ha_state()
                 return
 
-        await self._play_current_track()
+        await self._play_current_track(generation)
 
     async def _refill_station_queue(self) -> None:
         """Append more tracks from the current station to the queue."""
@@ -569,12 +665,17 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
             )
             if new_tracks:
                 self._queue.extend(new_tracks)
-                _LOGGER.debug("Refilled station queue, total tracks: %d", len(self._queue))
+                _LOGGER.debug(
+                    "Refilled station queue, total tracks: %d",
+                    len(self._queue),
+                )
         except Exception as err:
             _LOGGER.error("Failed to refill queue: %s", err)
 
-    async def _play_current_track(self) -> None:
+    async def _play_current_track(self, generation: int | None = None) -> None:
         """Build a local proxy URL and send it to the target media player."""
+        if generation is not None and generation != self._control_generation:
+            return
         track = self._current_track
         if not track:
             self._state = MediaPlayerState.IDLE
@@ -583,7 +684,8 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
 
         # Build a local HA proxy URL so that Yamaha/DLNA devices can fetch
         # audio from our HA server rather than directly from Yandex.
-        stream_url = self._build_stream_url(track["id"])
+        session = self._stream_manager.start(self._entry.entry_id)
+        stream_url = self._build_stream_url(track["id"], session)
         _LOGGER.debug(
             "Playing track '%s — %s' via %s",
             track.get("artist"),
@@ -612,12 +714,24 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
                     "dlna_dmr entity and use that as target_player instead.",
                     target, err,
                 )
+                self._stream_manager.stop(self._entry.entry_id)
+                self._state = MediaPlayerState.IDLE
+                self.async_write_ha_state()
+                return
         else:
             _LOGGER.warning(
                 "No target_player configured. Set one in integration options. "
                 "Stream URL: %s",
                 stream_url,
             )
+            self._stream_manager.stop(self._entry.entry_id)
+            self._state = MediaPlayerState.IDLE
+            self.async_write_ha_state()
+            return
+
+        if generation is not None and generation != self._control_generation:
+            self._stream_manager.stop(self._entry.entry_id)
+            return
 
         now = dt_util.utcnow()
         self._play_started_at = now
@@ -625,7 +739,12 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
         self._state = MediaPlayerState.PLAYING
         self.async_write_ha_state()
 
-    def _build_stream_url(self, track_id: str, seek_seconds: float = 0) -> str:
+    def _build_stream_url(
+        self,
+        track_id: str,
+        session: str,
+        seek_seconds: float = 0,
+    ) -> str:
         """Build a local HTTP proxy URL for the given track_id.
 
         The URL must be reachable by the target device (Yamaha, Chromecast, …)
@@ -650,9 +769,14 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
         # track_id may contain ":" (e.g. "12345:678") — encode it
         safe_id = track_id.replace(":", "_")
         url = f"{base}/api/yandex_music/stream/{self._entry.entry_id}/{safe_id}"
+        query = {"session": session}
         if seek_seconds > 0:
-            url += f"?t={int(seek_seconds)}"
-        _LOGGER.info("Stream URL for Yamaha/DLNA: %s", url)
+            query["t"] = str(int(seek_seconds))
+        url += f"?{urlencode(query)}"
+        _LOGGER.debug(
+            "Built stream URL for %s (session token omitted from log)",
+            track_id,
+        )
         return url
 
     async def _send_to_target(self, domain: str, service: str, data: dict) -> None:
@@ -664,8 +788,115 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
             domain,
             service,
             {"entity_id": target, **data},
-            blocking=False,
+            blocking=True,
         )
+
+    @property
+    def _stream_manager(self) -> YandexMusicStreamManager:
+        """Return the stream manager shared by all integration entries."""
+        return self.hass.data[DOMAIN][DATA_STREAM_MANAGER]
+
+    def _new_control_generation(self) -> int:
+        """Invalidate pending queue commands and return the new generation."""
+        self._cancel_idle_check()
+        self._control_generation += 1
+        return self._control_generation
+
+    def _cancel_idle_check(self) -> None:
+        """Cancel a pending debounced idle-state decision."""
+        task = self._idle_check_task
+        self._idle_check_task = None
+        if task is None or task.done():
+            return
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:
+            current = None
+        if task is not current:
+            task.cancel()
+
+    def _schedule_idle_check(
+        self,
+        target: str,
+        delay: float,
+        generation: int | None = None,
+    ) -> None:
+        """Schedule one delayed check for a target that reported idle."""
+        self._cancel_idle_check()
+        if generation is None:
+            generation = self._control_generation
+        task = self.hass.async_create_task(
+            self._handle_target_idle(target, generation, delay)
+        )
+        self._idle_check_task = task
+
+        def _clear_idle_task(done_task: asyncio.Task) -> None:
+            if self._idle_check_task is done_task:
+                self._idle_check_task = None
+
+        task.add_done_callback(_clear_idle_task)
+
+    def _stop_local(self, state: MediaPlayerState) -> None:
+        """Stop proxying and update local state immediately."""
+        self._new_control_generation()
+        self._stream_manager.stop(self._entry.entry_id)
+        self._state = state
+        self._play_started_at = None
+        self._last_play_command_at = None
+        self.async_write_ha_state()
+
+    async def _handle_target_idle(
+        self,
+        target: str,
+        generation: int,
+        delay: float,
+    ) -> None:
+        """Distinguish a completed track from an external stop/power-off."""
+        await asyncio.sleep(delay)
+        if generation != self._control_generation:
+            return
+
+        target_state = self.hass.states.get(target)
+        if target_state is not None and target_state.state not in {
+            "idle",
+            "off",
+            "unavailable",
+            "unknown",
+        }:
+            return
+        if target_state is not None and target_state.state in {
+            "off",
+            "unavailable",
+            "unknown",
+        }:
+            self._stop_local(
+                MediaPlayerState.OFF
+                if target_state.state == "off"
+                else MediaPlayerState.IDLE
+            )
+            return
+
+        elapsed = 0.0
+        if self._last_play_command_at is not None:
+            elapsed = (
+                dt_util.utcnow() - self._last_play_command_at
+            ).total_seconds()
+        duration = self.media_duration
+        if duration and elapsed < max(
+            _PLAY_COOLDOWN_SEC,
+            duration - _TRACK_END_TOLERANCE_SEC,
+        ):
+            _LOGGER.debug(
+                "Target player became idle %.0fs into a %.0fs track; "
+                "treating it as an external stop",
+                elapsed,
+                duration,
+            )
+            self._stop_local(MediaPlayerState.IDLE)
+            return
+
+        _LOGGER.debug("Target player finished track after %.0fs; advancing", elapsed)
+        await self._advance_queue(generation)
 
     # ------------------------------------------------------------------
     # Media browser
@@ -824,7 +1055,11 @@ def _track_to_dict(track) -> dict:
     )
 
     albums = getattr(track, "albums", []) or []
-    album_name = albums[0].title if albums and getattr(albums[0], "title", None) else None
+    album_name = (
+        albums[0].title
+        if albums and getattr(albums[0], "title", None)
+        else None
+    )
 
     cover = None
     if albums and getattr(albums[0], "cover_uri", None):

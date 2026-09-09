@@ -57,13 +57,18 @@ class YandexMusicConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_TOKEN): selector.TextSelector(
-                        selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.PASSWORD
+                        )
                     )
                 }
             ),
             errors=errors,
             description_placeholders={
-                "token_help": "https://github.com/osipovartem/ha-yandex-music#получение-токена"
+                "token_help": (
+                    "https://github.com/osipovartem/"
+                    "ha-yandex-music#getting-a-token"
+                )
             },
         )
 

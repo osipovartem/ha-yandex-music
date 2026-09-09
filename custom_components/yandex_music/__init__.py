@@ -9,18 +9,21 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import CONF_TOKEN, DOMAIN, PLATFORMS, UPDATE_INTERVAL_MINUTES
+from .const import (
+    CONF_TOKEN,
+    DATA_STREAM_MANAGER,
+    DOMAIN,
+    PLATFORMS,
+    UPDATE_INTERVAL_MINUTES,
+)
 from .stream import YandexMusicStreamView
+from .stream_manager import YandexMusicStreamManager
 
 _LOGGER = logging.getLogger(__name__)
-
-_stream_view_registered = False
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Yandex Music from a config entry."""
-    global _stream_view_registered
-
     token = entry.data[CONF_TOKEN]
 
     coordinator = YandexMusicCoordinator(hass, token)
@@ -32,12 +35,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await coordinator.async_config_entry_first_refresh()
 
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    domain_data[entry.entry_id] = coordinator
 
     # Register HTTP streaming view once (survives multiple config entries)
-    if not _stream_view_registered:
+    if DATA_STREAM_MANAGER not in domain_data:
+        domain_data[DATA_STREAM_MANAGER] = YandexMusicStreamManager()
         hass.http.register_view(YandexMusicStreamView())
-        _stream_view_registered = True
         _LOGGER.debug("Registered Yandex Music stream view")
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -51,6 +55,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
+        hass.data[DOMAIN][DATA_STREAM_MANAGER].stop(entry.entry_id)
         hass.data[DOMAIN].pop(entry.entry_id)
     return unload_ok
 
@@ -77,8 +82,6 @@ class YandexMusicCoordinator(DataUpdateCoordinator):
 
     async def async_initialize(self) -> None:
         """Initialize the Yandex Music client."""
-        from yandex_music import Client
-
         self.client = await self.hass.async_add_executor_job(
             self._init_client
         )
