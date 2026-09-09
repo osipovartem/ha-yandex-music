@@ -3,6 +3,7 @@
   "name": "Yandex Music",
   "codeowners": ["@osipovartem"],
   "config_flow": true,
+  "dependencies": ["http"],
   "documentation": "https://github.com/osipovartem/ha-yandex-music",
   "integration_type": "service",
   "iot_class": "cloud_polling",
