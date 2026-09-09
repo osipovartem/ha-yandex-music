@@ -4,7 +4,7 @@
 
 # Yandex Music для Home Assistant
 
-[English](README.md) | **Русский**
+[English](README.md#english) | **Русский**
 
 Неофициальная HACS-интеграция для воспроизведения Яндекс Музыки на выбранном медиаплеере Home Assistant с управлением очередью треков.
 
