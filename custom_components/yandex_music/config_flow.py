@@ -155,7 +155,14 @@ class YandexMusicOptionsFlow(config_entries.OptionsFlow):
             }
         )
 
-        return self.async_show_form(step_id="init", data_schema=schema)
+        # The personal-playlist choice opens a second selector after this form.
+        # Tell the frontend this may not be the final step so it renders a
+        # "Next" action instead of the misleading "Submit" action.
+        return self.async_show_form(
+            step_id="init",
+            data_schema=schema,
+            last_step=False,
+        )
 
     async def async_step_playlist(
         self, user_input: dict[str, Any] | None = None
@@ -194,4 +201,8 @@ class YandexMusicOptionsFlow(config_entries.OptionsFlow):
                 )
             }
         )
-        return self.async_show_form(step_id="playlist", data_schema=schema)
+        return self.async_show_form(
+            step_id="playlist",
+            data_schema=schema,
+            last_step=True,
+        )

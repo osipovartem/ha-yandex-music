@@ -116,6 +116,7 @@ class SourceCatalogTest(unittest.TestCase):
         self.assertNotIn("station_id:user:onyourwave", choices)
         self.assertIn("liked:tracks", choices)
         self.assertIn(PLAYLIST_PICKER_VALUE, choices)
+        self.assertIn("→", choices[PLAYLIST_PICKER_VALUE])
         self.assertNotIn("playlist:42:7", choices)
 
         playlists = dict(

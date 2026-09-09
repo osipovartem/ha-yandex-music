@@ -120,7 +120,7 @@ def build_default_source_choices(
     if build_playlist_choices(catalog_data, current_source):
         add(
             PLAYLIST_PICKER_VALUE,
-            "🎵 Personal playlist… / Личный плейлист…",
+            "🎵 Choose personal playlist → / Выбрать личный плейлист →",
         )
 
     if (

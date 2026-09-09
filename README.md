@@ -69,7 +69,7 @@ The integration creates a virtual entity such as `media_player.yandex_music`. Se
 
 The source list is loaded from the connected Yandex Music account. Changing the default source saves the new choice but does not start it immediately; it is used by the next Play or Turn on command.
 
-To keep the main settings screen compact, **Personal playlist…** opens a separate dropdown containing only your playlists. Personal playlists and liked tracks loop from the beginning after their last track; with shuffle enabled, they are reshuffled before each new pass.
+To keep the main settings screen compact, select **Choose personal playlist →** and press **Next**. A second screen opens a dropdown containing only your playlists. Personal playlists and liked tracks loop from the beginning after their last track; with shuffle enabled, they are reshuffled before each new pass.
 
 ## Usage
 
@@ -238,7 +238,7 @@ Bug reports and feature requests are welcome in [GitHub Issues](https://github.c
 
 Список источников загружается из подключённого аккаунта Яндекс Музыки. Изменение источника сохраняет новый выбор, но не запускает его сразу: он включится следующей командой Play или Turn on.
 
-Чтобы основной экран настроек оставался компактным, пункт **Личный плейлист…** открывает отдельный выпадающий список только с плейлистами. После последнего трека личный плейлист или список «Мне нравится» начинается сначала; при включённом shuffle очередь перемешивается перед каждым новым кругом.
+Чтобы основной экран настроек оставался компактным, выберите **Выбрать личный плейлист →** и нажмите **Далее**. На втором экране откроется выпадающий список только с плейлистами. После последнего трека личный плейлист или список «Мне нравится» начинается сначала; при включённом shuffle очередь перемешивается перед каждым новым кругом.
 
 ## Использование
 

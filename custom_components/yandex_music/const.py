@@ -9,7 +9,6 @@ CONF_TARGET_PLAYER = "target_player"
 CONF_DEFAULT_STATION = "default_station"  # Legacy option key (before 1.2.0)
 CONF_DEFAULT_SOURCE = "default_source"
 CONF_DEFAULT_PLAYLIST = "default_playlist"
-CONF_DEFAULT_PLAYLIST = "default_playlist"
 
 PLATFORMS = ["media_player"]
 
