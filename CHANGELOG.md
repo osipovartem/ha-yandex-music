@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.0
+
+- Move personal playlists into a separate compact selector step.
+- Repeat personal playlists and liked tracks instead of stopping at the end.
+- Reshuffle repeating library queues before a new pass when shuffle is enabled.
+- Wrap Previous track from the first item to the end of a repeating queue.
+
 ## 1.2.1
 
 - Fix the README integration icon when documentation is rendered inside HACS.

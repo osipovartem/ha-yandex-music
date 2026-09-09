@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 DEFAULT_LEGACY_STATION = "onyourwave"
+PLAYLIST_PICKER_VALUE = "__personal_playlist__"
 
 _SOURCE_PREFIXES = (
     "station:",
@@ -33,6 +34,19 @@ def media_type_for_source(source: str) -> str:
     if source.startswith("track:"):
         return "track"
     return "music"
+
+
+def resolve_queue_position(
+    candidate: int,
+    queue_length: int,
+    repeat: bool,
+) -> tuple[int | None, bool]:
+    """Resolve the next queue index and report whether it wrapped."""
+    if 0 <= candidate < queue_length:
+        return candidate, False
+    if repeat and queue_length > 0:
+        return 0, True
+    return None, False
 
 
 def station_result_to_dict(result: Any) -> dict[str, str] | None:
@@ -102,23 +116,58 @@ def build_default_source_choices(
 
     add("liked:tracks", "❤️ Liked tracks / Мне нравится")
 
-    playlists = sorted(
+    normalized_current = normalize_default_source(current_source)
+    if build_playlist_choices(catalog_data, current_source):
+        add(
+            PLAYLIST_PICKER_VALUE,
+            "🎵 Personal playlist… / Личный плейлист…",
+        )
+
+    if (
+        normalized_current not in values
+        and not normalized_current.startswith("playlist:")
+    ):
+        add(
+            normalized_current,
+            f"Current / Текущий: {normalized_current}",
+        )
+
+    return choices
+
+
+def build_playlist_choices(
+    catalog_data: dict[str, Any],
+    current_source: str | None = None,
+) -> list[tuple[str, str]]:
+    """Build a separate compact selector for personal playlists."""
+    choices: list[tuple[str, str]] = []
+    values: set[str] = set()
+
+    for playlist in sorted(
         catalog_data.get("playlists", []),
         key=lambda item: str(item.get("title", "")).casefold(),
-    )
-    for playlist in playlists:
+    ):
         uid = playlist.get("uid")
         kind = playlist.get("kind")
         title = playlist.get("title")
         if uid is None or kind is None or not title:
             continue
-        add(f"playlist:{uid}:{kind}", f"🎵 {title}")
+        value = f"playlist:{uid}:{kind}"
+        if value in values:
+            continue
+        values.add(value)
+        choices.append((value, str(title)))
 
     normalized_current = normalize_default_source(current_source)
-    if normalized_current not in values:
-        add(
-            normalized_current,
-            f"Current / Текущий: {normalized_current}",
+    if (
+        normalized_current.startswith("playlist:")
+        and normalized_current not in values
+    ):
+        choices.append(
+            (
+                normalized_current,
+                f"Current / Текущий: {normalized_current}",
+            )
         )
 
     return choices

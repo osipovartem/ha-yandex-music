@@ -17,6 +17,7 @@ An unofficial HACS integration that plays Yandex Music on a selected Home Assist
 - Media browser with presets, personalized Yandex stations, personal playlists, and liked tracks
 - Delegated playback on any Home Assistant player that accepts HTTP music URLs
 - Automatic station queue refill
+- Continuous looping for personal playlists and liked tracks
 - Play, pause, stop, seek, shuffle, next, and previous controls
 - Default source (station, liked tracks, or personal playlist) for simple play/turn-on commands
 - Alice voice control through the [Yandex Smart Home](https://github.com/dext0r/yandex_smart_home) integration
@@ -67,6 +68,8 @@ No YAML is required for basic playback. Configure the integration in the Home As
 The integration creates a virtual entity such as `media_player.yandex_music`. Send commands to this virtual entity; it delegates audio to the configured target player.
 
 The source list is loaded from the connected Yandex Music account. Changing the default source saves the new choice but does not start it immediately; it is used by the next Play or Turn on command.
+
+To keep the main settings screen compact, **Personal playlist…** opens a separate dropdown containing only your playlists. Personal playlists and liked tracks loop from the beginning after their last track; with shuffle enabled, they are reshuffled before each new pass.
 
 ## Usage
 
@@ -183,6 +186,7 @@ Bug reports and feature requests are welcome in [GitHub Issues](https://github.c
 - Браузер медиа: пресеты, персональные станции Яндекса, личные плейлисты и понравившиеся треки
 - Воспроизведение на любом медиаплеере Home Assistant, принимающем HTTP-ссылки
 - Автоматическое пополнение очереди станции
+- Непрерывное зацикливание личных плейлистов и понравившихся треков
 - Play, pause, stop, seek, shuffle, следующий и предыдущий трек
 - Источник по умолчанию: станция, понравившиеся треки или личный плейлист
 - Голосовое управление через Алису и [Yandex Smart Home](https://github.com/dext0r/yandex_smart_home)
@@ -233,6 +237,8 @@ Bug reports and feature requests are welcome in [GitHub Issues](https://github.c
 Интеграция создаёт виртуальную сущность, например `media_player.yandex_music`. Все команды нужно отправлять ей — музыку она передаст выбранному целевому плееру.
 
 Список источников загружается из подключённого аккаунта Яндекс Музыки. Изменение источника сохраняет новый выбор, но не запускает его сразу: он включится следующей командой Play или Turn on.
+
+Чтобы основной экран настроек оставался компактным, пункт **Личный плейлист…** открывает отдельный выпадающий список только с плейлистами. После последнего трека личный плейлист или список «Мне нравится» начинается сначала; при включённом shuffle очередь перемешивается перед каждым новым кругом.
 
 ## Использование
 

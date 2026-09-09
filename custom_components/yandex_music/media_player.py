@@ -36,7 +36,11 @@ from .const import (
     PLACEHOLDER_IMAGE,
     PREDEFINED_STATIONS,
 )
-from .source_catalog import media_type_for_source, normalize_default_source
+from .source_catalog import (
+    media_type_for_source,
+    normalize_default_source,
+    resolve_queue_position,
+)
 from .stream_manager import YandexMusicStreamManager
 
 _LOGGER = logging.getLogger(__name__)
@@ -107,6 +111,7 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
         self._queue: list[dict] = []
         self._queue_pos: int = 0
         self._shuffle: bool = False
+        self._repeat_queue: bool = False
 
         # Position / cooldown tracking
         self._play_started_at: datetime | None = None
@@ -335,6 +340,9 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
         if self._queue_pos > 0:
             self._queue_pos -= 1
             await self._play_current_track(generation)
+        elif self._repeat_queue and self._queue:
+            self._queue_pos = len(self._queue) - 1
+            await self._play_current_track(generation)
         self.async_write_ha_state()
 
     async def async_set_shuffle(self, shuffle: bool) -> None:
@@ -474,6 +482,7 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
 
         self._queue = tracks
         self._queue_pos = 0
+        self._repeat_queue = False
         if self._shuffle:
             import random
             random.shuffle(self._queue)
@@ -548,6 +557,7 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
         self._current_station_id = None
         self._queue = tracks
         self._queue_pos = 0
+        self._repeat_queue = True
         if self._shuffle:
             import random
             random.shuffle(self._queue)
@@ -581,6 +591,7 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
         self._current_station_id = None
         self._queue = tracks
         self._queue_pos = 0
+        self._repeat_queue = True
         if self._shuffle:
             import random
             random.shuffle(self._queue)
@@ -598,6 +609,7 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
         """Play a single track by id."""
         self._queue = []
         self._queue_pos = 0
+        self._repeat_queue = False
         try:
             track_info = await self.hass.async_add_executor_job(
                 self._fetch_track_info, track_id
@@ -652,11 +664,21 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
             if generation != self._control_generation:
                 return
             if self._queue_pos >= len(self._queue):
-                self._stream_manager.stop(self._entry.entry_id)
-                self._state = MediaPlayerState.IDLE
-                self._play_started_at = None
-                self.async_write_ha_state()
-                return
+                next_position, wrapped = resolve_queue_position(
+                    self._queue_pos,
+                    len(self._queue),
+                    self._repeat_queue,
+                )
+                if next_position is None:
+                    self._stream_manager.stop(self._entry.entry_id)
+                    self._state = MediaPlayerState.IDLE
+                    self._play_started_at = None
+                    self.async_write_ha_state()
+                    return
+                self._queue_pos = next_position
+                if wrapped and self._shuffle and len(self._queue) > 1:
+                    import random
+                    random.shuffle(self._queue)
 
         await self._play_current_track(generation)
 

@@ -10,6 +10,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_DEFAULT_PLAYLIST,
     CONF_DEFAULT_SOURCE,
     CONF_DEFAULT_STATION,
     CONF_TARGET_PLAYER,
@@ -19,7 +20,9 @@ from .const import (
     PREDEFINED_STATIONS,
 )
 from .source_catalog import (
+    PLAYLIST_PICKER_VALUE,
     build_default_source_choices,
+    build_playlist_choices,
     normalize_default_source,
 )
 
@@ -93,29 +96,42 @@ class YandexMusicOptionsFlow(config_entries.OptionsFlow):
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         self._config_entry = config_entry
+        self._current_source = config_entry.options.get(
+            CONF_DEFAULT_SOURCE,
+            config_entry.options.get(CONF_DEFAULT_STATION, DEFAULT_STATION),
+        )
+        self._pending_options: dict[str, Any] = {}
+
+    def _catalog_data(self) -> dict[str, Any]:
+        """Return the latest account catalog cached by the coordinator."""
+        coordinator = self.hass.data.get(DOMAIN, {}).get(
+            self._config_entry.entry_id
+        )
+        return getattr(coordinator, "data", None) or {}
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
         """Manage the options."""
         if user_input is not None:
+            if user_input.get(CONF_DEFAULT_SOURCE) == PLAYLIST_PICKER_VALUE:
+                self._pending_options = user_input
+                return await self.async_step_playlist()
             return self.async_create_entry(title="", data=user_input)
 
         current = self._config_entry.options
-        current_source = current.get(
-            CONF_DEFAULT_SOURCE,
-            current.get(CONF_DEFAULT_STATION, DEFAULT_STATION),
+        normalized_current = normalize_default_source(self._current_source)
+        selected_source = (
+            PLAYLIST_PICKER_VALUE
+            if normalized_current.startswith("playlist:")
+            else normalized_current
         )
-        coordinator = self.hass.data.get(DOMAIN, {}).get(
-            self._config_entry.entry_id
-        )
-        catalog_data = getattr(coordinator, "data", None) or {}
         source_options = [
             selector.SelectOptionDict(value=value, label=label)
             for value, label in build_default_source_choices(
                 PREDEFINED_STATIONS,
-                catalog_data,
-                current_source,
+                self._catalog_data(),
+                self._current_source,
             )
         ]
 
@@ -129,7 +145,7 @@ class YandexMusicOptionsFlow(config_entries.OptionsFlow):
                 ),
                 vol.Optional(
                     CONF_DEFAULT_SOURCE,
-                    default=normalize_default_source(current_source),
+                    default=selected_source,
                 ): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=source_options,
@@ -140,3 +156,42 @@ class YandexMusicOptionsFlow(config_entries.OptionsFlow):
         )
 
         return self.async_show_form(step_id="init", data_schema=schema)
+
+    async def async_step_playlist(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.FlowResult:
+        """Select a personal playlist on a separate compact screen."""
+        if user_input is not None:
+            options = dict(self._pending_options)
+            options[CONF_DEFAULT_SOURCE] = user_input[CONF_DEFAULT_PLAYLIST]
+            return self.async_create_entry(title="", data=options)
+
+        playlist_choices = build_playlist_choices(
+            self._catalog_data(),
+            self._current_source,
+        )
+        playlist_options = [
+            selector.SelectOptionDict(value=value, label=label)
+            for value, label in playlist_choices
+        ]
+        normalized_current = normalize_default_source(self._current_source)
+        default_playlist = (
+            normalized_current
+            if normalized_current.startswith("playlist:")
+            else playlist_choices[0][0]
+        )
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_DEFAULT_PLAYLIST,
+                    default=default_playlist,
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=playlist_options,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                )
+            }
+        )
+        return self.async_show_form(step_id="playlist", data_schema=schema)

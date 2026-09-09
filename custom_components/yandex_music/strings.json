@@ -28,6 +28,13 @@
           "target_player": "Device that will play the music stream (Chromecast, Sonos, Yandex Station, and others)",
           "default_source": "Station, liked tracks, or personal playlist started by the play or turn-on command"
         }
+      },
+      "playlist": {
+        "title": "Choose a personal playlist",
+        "description": "Select the playlist to use as the default playback source.",
+        "data": {
+          "default_playlist": "Playlist"
+        }
       }
     }
   }
