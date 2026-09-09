@@ -10,6 +10,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_DEFAULT_SOURCE,
     CONF_DEFAULT_STATION,
     CONF_TARGET_PLAYER,
     CONF_TOKEN,
@@ -17,14 +18,12 @@ from .const import (
     DOMAIN,
     PREDEFINED_STATIONS,
 )
+from .source_catalog import (
+    build_default_source_choices,
+    normalize_default_source,
+)
 
 _LOGGER = logging.getLogger(__name__)
-
-STATION_OPTIONS = [
-    selector.SelectOptionDict(value=key, label=val["name"])
-    for key, val in PREDEFINED_STATIONS.items()
-]
-
 
 class YandexMusicConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Yandex Music."""
@@ -103,6 +102,22 @@ class YandexMusicOptionsFlow(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data=user_input)
 
         current = self._config_entry.options
+        current_source = current.get(
+            CONF_DEFAULT_SOURCE,
+            current.get(CONF_DEFAULT_STATION, DEFAULT_STATION),
+        )
+        coordinator = self.hass.data.get(DOMAIN, {}).get(
+            self._config_entry.entry_id
+        )
+        catalog_data = getattr(coordinator, "data", None) or {}
+        source_options = [
+            selector.SelectOptionDict(value=value, label=label)
+            for value, label in build_default_source_choices(
+                PREDEFINED_STATIONS,
+                catalog_data,
+                current_source,
+            )
+        ]
 
         schema = vol.Schema(
             {
@@ -113,11 +128,11 @@ class YandexMusicOptionsFlow(config_entries.OptionsFlow):
                     selector.EntitySelectorConfig(domain="media_player")
                 ),
                 vol.Optional(
-                    CONF_DEFAULT_STATION,
-                    default=current.get(CONF_DEFAULT_STATION, DEFAULT_STATION),
+                    CONF_DEFAULT_SOURCE,
+                    default=normalize_default_source(current_source),
                 ): selector.SelectSelector(
                     selector.SelectSelectorConfig(
-                        options=STATION_OPTIONS,
+                        options=source_options,
                         mode=selector.SelectSelectorMode.LIST,
                     )
                 ),

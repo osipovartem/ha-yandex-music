@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0
+
+- Replace the fixed default-station setting with a dynamic default-source selector.
+- Allow liked tracks and personal playlists to be used as the default source.
+- Load personalized recommended stations from the Yandex Music account.
+- Show personalized stations in the Home Assistant media browser.
+- Preserve compatibility with default-station values saved by versions 1.0 and 1.1.
+
 ## 1.1.0
 
 - Stop and invalidate the active proxy stream when playback stops or the target player turns off.

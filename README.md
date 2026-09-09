@@ -14,11 +14,11 @@ An unofficial HACS integration that plays Yandex Music on a selected Home Assist
 
 ## Features
 
-- Media browser with mood stations, personal playlists, and liked tracks
+- Media browser with presets, personalized Yandex stations, personal playlists, and liked tracks
 - Delegated playback on any Home Assistant player that accepts HTTP music URLs
 - Automatic station queue refill
 - Play, pause, stop, seek, shuffle, next, and previous controls
-- Default station for simple play/turn-on commands
+- Default source (station, liked tracks, or personal playlist) for simple play/turn-on commands
 - Alice voice control through the [Yandex Smart Home](https://github.com/dext0r/yandex_smart_home) integration
 - Immediate proxy shutdown when playback is stopped or the target player is turned off
 
@@ -56,13 +56,17 @@ The token gives the integration access to your Yandex Music library. Treat it li
 
 ## Configuration
 
+No YAML is required for basic playback. Configure the integration in the Home Assistant UI:
+
 1. Open **Settings → Devices & services → Add integration → Yandex Music**.
 2. Enter the token.
 3. Open **Configure** for the installed integration and set:
    - **Target media player** — the speaker or receiver that will play the stream.
-   - **Default station** — the station started by Play, Turn on, or Alice's “turn on music” command.
+   - **Default source** — a preset or personalized station, liked tracks, or personal playlist started by Play, Turn on, or Alice's “turn on music” command.
 
 The integration creates a virtual entity such as `media_player.yandex_music`. Send commands to this virtual entity; it delegates audio to the configured target player.
+
+The source list is loaded from the connected Yandex Music account. Changing the default source saves the new choice but does not start it immediately; it is used by the next Play or Turn on command.
 
 ## Usage
 
@@ -74,6 +78,7 @@ Open **Browse media** on the Yandex Music entity. Available sources include:
 - Calm (`station:calm`)
 - Instrumental (`station:wordless`)
 - Energetic (`station:energetic`)
+- Personalized stations recommended for the connected account
 - Personal playlists
 - Liked tracks
 
@@ -175,11 +180,11 @@ Bug reports and feature requests are welcome in [GitHub Issues](https://github.c
 
 ## Возможности
 
-- Браузер медиа: станции по настроению, личные плейлисты и любимые треки
+- Браузер медиа: пресеты, персональные станции Яндекса, личные плейлисты и понравившиеся треки
 - Воспроизведение на любом медиаплеере Home Assistant, принимающем HTTP-ссылки
 - Автоматическое пополнение очереди станции
 - Play, pause, stop, seek, shuffle, следующий и предыдущий трек
-- Станция по умолчанию для простой команды включения
+- Источник по умолчанию: станция, понравившиеся треки или личный плейлист
 - Голосовое управление через Алису и [Yandex Smart Home](https://github.com/dext0r/yandex_smart_home)
 - Немедленная остановка прокси-потока при остановке музыки или выключении целевого плеера
 
@@ -217,13 +222,17 @@ Bug reports and feature requests are welcome in [GitHub Issues](https://github.c
 
 ## Настройка
 
+Для базового воспроизведения YAML не нужен. Настройте интеграцию через интерфейс Home Assistant:
+
 1. Откройте **Настройки → Устройства и службы → Добавить интеграцию → Yandex Music**.
 2. Введите токен.
 3. Откройте **Настройки** установленной интеграции и задайте:
    - **Медиаплеер для воспроизведения** — колонку или ресивер, куда будет отправлен поток.
-   - **Станция по умолчанию** — запускается кнопкой Play, командой включения или фразой Алисы «включи музыку».
+   - **Источник по умолчанию** — пресет или персональная станция, понравившиеся треки либо личный плейлист для кнопки Play, команды включения или фразы Алисы «включи музыку».
 
 Интеграция создаёт виртуальную сущность, например `media_player.yandex_music`. Все команды нужно отправлять ей — музыку она передаст выбранному целевому плееру.
+
+Список источников загружается из подключённого аккаунта Яндекс Музыки. Изменение источника сохраняет новый выбор, но не запускает его сразу: он включится следующей командой Play или Turn on.
 
 ## Использование
 
@@ -235,8 +244,9 @@ Bug reports and feature requests are welcome in [GitHub Issues](https://github.c
 - Спокойное (`station:calm`)
 - Без слов (`station:wordless`)
 - Энергичное (`station:energetic`)
+- Персональные станции, рекомендованные для подключённого аккаунта
 - Личные плейлисты
-- Любимые треки
+- Понравившиеся треки
 
 ### Запуск станции
 

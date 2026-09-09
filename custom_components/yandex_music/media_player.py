@@ -23,6 +23,7 @@ from homeassistant.util import dt as dt_util
 
 from . import YandexMusicCoordinator
 from .const import (
+    CONF_DEFAULT_SOURCE,
     CONF_DEFAULT_STATION,
     CONF_TARGET_PLAYER,
     DATA_STREAM_MANAGER,
@@ -35,6 +36,7 @@ from .const import (
     PLACEHOLDER_IMAGE,
     PREDEFINED_STATIONS,
 )
+from .source_catalog import media_type_for_source, normalize_default_source
 from .stream_manager import YandexMusicStreamManager
 
 _LOGGER = logging.getLogger(__name__)
@@ -282,11 +284,19 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
     # ------------------------------------------------------------------
 
     async def async_turn_on(self) -> None:
-        """Start the default station, including from Alice on/off commands."""
-        default = self._entry.options.get(CONF_DEFAULT_STATION, DEFAULT_STATION)
+        """Start the default source, including from Alice on/off commands."""
+        await self._play_default_source()
+
+    async def _play_default_source(self) -> None:
+        """Start the configured source while accepting pre-1.2 station keys."""
+        configured = self._entry.options.get(
+            CONF_DEFAULT_SOURCE,
+            self._entry.options.get(CONF_DEFAULT_STATION, DEFAULT_STATION),
+        )
+        media_id = normalize_default_source(configured)
         await self.async_play_media(
-            media_type=MEDIA_TYPE_STATION,
-            media_id=f"station:{default}",
+            media_type=media_type_for_source(media_id),
+            media_id=media_id,
         )
 
     async def async_turn_off(self) -> None:
@@ -301,12 +311,7 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
             self._state = MediaPlayerState.PLAYING
             self.async_write_ha_state()
         elif self._state in (MediaPlayerState.IDLE, MediaPlayerState.OFF):
-            # Play default station
-            default = self._entry.options.get(CONF_DEFAULT_STATION, DEFAULT_STATION)
-            await self.async_play_media(
-                media_type=MEDIA_TYPE_STATION,
-                media_id=f"station:{default}",
-            )
+            await self._play_default_source()
 
     async def async_media_pause(self) -> None:
         """Pause playback."""
@@ -978,6 +983,28 @@ class YandexMusicMediaPlayer(MediaPlayerEntity):
             )
             for key, cfg in PREDEFINED_STATIONS.items()
         ]
+        static_station_ids = {
+            cfg["station_id"]
+            for cfg in PREDEFINED_STATIONS.values()
+            if cfg.get("mood_energy") is None
+        }
+        data = self._coordinator.data or {}
+        for station in data.get("stations", []):
+            station_id = station.get("station_id")
+            title = station.get("title")
+            if not station_id or not title or station_id in static_station_ids:
+                continue
+            children.append(
+                BrowseMedia(
+                    title=title,
+                    media_class="music",
+                    media_content_type=MEDIA_TYPE_STATION,
+                    media_content_id=f"station_id:{station_id}",
+                    can_play=True,
+                    can_expand=False,
+                    thumbnail=station.get("image_url"),
+                )
+            )
         return BrowseMedia(
             title="Станции и настроение",
             media_class="directory",

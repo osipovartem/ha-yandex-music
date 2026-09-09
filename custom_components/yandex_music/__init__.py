@@ -16,6 +16,7 @@ from .const import (
     PLATFORMS,
     UPDATE_INTERVAL_MINUTES,
 )
+from .source_catalog import station_result_to_dict
 from .stream import YandexMusicStreamView
 from .stream_manager import YandexMusicStreamManager
 
@@ -104,8 +105,20 @@ class YandexMusicCoordinator(DataUpdateCoordinator):
         """Synchronously fetch playlists and account info."""
         playlists = self.client.users_playlists_list() or []
         account_status = self.client.account_status()
+        stations: list[dict[str, str]] = []
+        try:
+            dashboard = self.client.rotor_stations_dashboard()
+            for result in getattr(dashboard, "stations", []) or []:
+                station = station_result_to_dict(result)
+                if station is not None:
+                    stations.append(station)
+        except Exception as err:
+            # The personalized station dashboard is optional. Keep playlists and
+            # liked tracks available if Yandex changes this unofficial endpoint.
+            _LOGGER.warning("Cannot load the Yandex station dashboard: %s", err)
 
         return {
+            "stations": stations,
             "playlists": [
                 {
                     "uid": p.uid,
