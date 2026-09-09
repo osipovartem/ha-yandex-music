@@ -132,7 +132,7 @@ Turning off the virtual player also stops playback, but does not power down the 
 
 ## Alice voice control
 
-Expose the virtual Yandex Music entity through Yandex Smart Home. Its next/previous and on/off features are advertised by the entity itself. If you configure features explicitly, use:
+Expose the virtual Yandex Music entity through Yandex Smart Home. Its next/previous and on/off features are advertised by the entity itself, so installations configured entirely in the UI do not need YAML. If you need to declare the features explicitly, use:
 
 ```yaml
 yandex_smart_home:
@@ -147,12 +147,16 @@ yandex_smart_home:
       support_set_channel: false
 ```
 
-After changing the configuration, restart Home Assistant and update the device list in the Yandex smart-home app. Example phrases (the exact wording can depend on the room and entity name):
+After changing the configuration, restart Home Assistant and update the device list in the Yandex smart-home app.
+
+Yandex Smart Home has no dedicated track capability. It represents next/previous as a relative `channel` change, shown as **+** and **−** in the app. The native phrases therefore use “channel”:
 
 - “Алиса, включи Яндекс музыку”
 - “Алиса, выключи Яндекс музыку”
-- “Алиса, следующий трек на Яндекс музыке”
-- “Алиса, предыдущий трек на Яндекс музыке”
+- “Алиса, включи следующий канал на Яндекс музыке”
+- “Алиса, переключи Яндекс музыку на предыдущий канал”
+
+For natural “следующий трек” and “предыдущий трек” phrases, create two scenarios in the **Home with Alice** app. Use the desired phrase as the scenario condition and the Yandex Music device's **+** or **−** channel action as its action.
 
 ## Troubleshooting
 
@@ -301,7 +305,7 @@ target:
 
 ## Голосовое управление через Алису
 
-Передайте виртуальную сущность Yandex Music в Yandex Smart Home. Она сама объявляет поддержку следующего/предыдущего трека и включения/выключения. Если список функций задан явно, используйте:
+Передайте виртуальную сущность Yandex Music в Yandex Smart Home. Она сама объявляет поддержку следующего/предыдущего трека и включения/выключения, поэтому при настройке полностью через интерфейс YAML не требуется. Если список функций необходимо задать явно, используйте:
 
 ```yaml
 yandex_smart_home:
@@ -316,12 +320,16 @@ yandex_smart_home:
       support_set_channel: false
 ```
 
-После изменения конфигурации перезапустите Home Assistant и обновите список устройств в приложении Умного дома Яндекса. Примеры фраз (точная форма зависит от комнаты и имени сущности):
+После изменения конфигурации перезапустите Home Assistant и обновите список устройств в приложении Умного дома Яндекса.
+
+В Умном доме Яндекса нет отдельной функции для переключения трека. Следующий/предыдущий трек передаётся как относительное изменение `channel` и отображается кнопками **+** и **−**. Поэтому встроенные голосовые фразы используют слово «канал»:
 
 - «Алиса, включи Яндекс музыку»
 - «Алиса, выключи Яндекс музыку»
-- «Алиса, следующий трек на Яндекс музыке»
-- «Алиса, предыдущий трек на Яндекс музыке»
+- «Алиса, включи следующий канал на Яндекс музыке»
+- «Алиса, переключи Яндекс музыку на предыдущий канал»
+
+Чтобы говорить «следующий трек» и «предыдущий трек», создайте в приложении **Дом с Алисой** два сценария. Укажите желаемую фразу как условие запуска, а в действии выберите устройство Yandex Music и соответственно кнопку канала **+** или **−**.
 
 ## Если что-то не работает
 
