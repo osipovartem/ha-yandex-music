@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.1
+
+- Fix the README integration icon when documentation is rendered inside HACS.
+
 ## 1.2.0
 
 - Replace the fixed default-station setting with a dynamic default-source selector.

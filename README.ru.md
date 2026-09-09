@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="custom_components/yandex_music/brand/icon@2x.png" width="160" alt="Иконка Yandex Music для Home Assistant">
+  <img src="https://raw.githubusercontent.com/osipovartem/ha-yandex-music/main/custom_components/yandex_music/brand/icon@2x.png" width="160" alt="Иконка Yandex Music для Home Assistant">
 </p>
 
 # Yandex Music для Home Assistant

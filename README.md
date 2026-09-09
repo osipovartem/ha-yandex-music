@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="custom_components/yandex_music/brand/icon@2x.png" width="160" alt="Yandex Music for Home Assistant icon">
+  <img src="https://raw.githubusercontent.com/osipovartem/ha-yandex-music/main/custom_components/yandex_music/brand/icon@2x.png" width="160" alt="Yandex Music for Home Assistant icon">
 </p>
 
 <a id="english"></a>
