@@ -21,6 +21,7 @@ from aiohttp import web
 
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import DATA_STREAM_MANAGER, DOMAIN
 from .stream_manager import YandexMusicStreamManager
@@ -127,65 +128,66 @@ class YandexMusicStreamView(HomeAssistantView):
             headers["Range"] = f"bytes={int(byte_offset)}-"
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    yandex_url,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=None, connect=10),
-                ) as upstream:
-                    _LOGGER.info(
-                        "Upstream response: status=%s Content-Type=%s "
-                        "Content-Length=%s",
-                        upstream.status,
-                        upstream.headers.get("Content-Type", "—"),
-                        upstream.headers.get("Content-Length", "—"),
-                    )
-                    response_headers = {
-                        # Force audio/mpeg — Yamaha may reject other content types
-                        "Content-Type": "audio/mpeg",
-                        "Accept-Ranges": "bytes",
-                        "Cache-Control": "no-cache",
-                        # DLNA headers — required by Yamaha MusicCast and most
-                        # UPnP/DLNA renderers to recognise the stream as playable.
-                        # PN=MP3  → explicit DLNA profile (required by Yamaha)
-                        # OP=01   → byte-range seeking supported
-                        # CI=0    → no transcoding
-                        # FLAGS   → streaming transfer mode
-                        "transferMode.dlna.org": "Streaming",
-                        "contentFeatures.dlna.org": (
-                            "DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;DLNA.ORG_CI=0;"
-                            "DLNA.ORG_FLAGS=01700000000000000000000000000000"
-                        ),
-                    }
-                    if "Content-Length" in upstream.headers:
-                        response_headers["Content-Length"] = upstream.headers[
-                            "Content-Length"
-                        ]
-                    if "Content-Range" in upstream.headers:
-                        response_headers["Content-Range"] = upstream.headers[
-                            "Content-Range"
-                        ]
+            session = async_get_clientsession(hass)
+            async with session.get(
+                yandex_url,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=None, connect=10),
+            ) as upstream:
+                _LOGGER.info(
+                    "Upstream response: status=%s Content-Type=%s "
+                    "Content-Length=%s",
+                    upstream.status,
+                    upstream.headers.get("Content-Type", "—"),
+                    upstream.headers.get("Content-Length", "—"),
+                )
+                response_headers = {
+                    # Force audio/mpeg — Yamaha may reject other content types
+                    "Content-Type": "audio/mpeg",
+                    "Accept-Ranges": "bytes",
+                    "Cache-Control": "no-cache",
+                    # DLNA headers — required by Yamaha MusicCast and most
+                    # UPnP/DLNA renderers to recognise the stream as playable.
+                    # PN=MP3  → explicit DLNA profile (required by Yamaha)
+                    # OP=01   → byte-range seeking supported
+                    # CI=0    → no transcoding
+                    # FLAGS   → streaming transfer mode
+                    "transferMode.dlna.org": "Streaming",
+                    "contentFeatures.dlna.org": (
+                        "DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;DLNA.ORG_CI=0;"
+                        "DLNA.ORG_FLAGS=01700000000000000000000000000000"
+                    ),
+                }
+                if "Content-Length" in upstream.headers:
+                    response_headers["Content-Length"] = upstream.headers[
+                        "Content-Length"
+                    ]
+                if "Content-Range" in upstream.headers:
+                    response_headers["Content-Range"] = upstream.headers[
+                        "Content-Range"
+                    ]
 
-                    resp = web.StreamResponse(
-                        status=upstream.status,
-                        headers=response_headers,
-                    )
-                    await resp.prepare(request)
+                resp = web.StreamResponse(
+                    status=upstream.status,
+                    headers=response_headers,
+                )
+                await resp.prepare(request)
 
-                    async for chunk in upstream.content.iter_chunked(_CHUNK):
-                        if not stream_manager.is_active(entry_id, token):
-                            break
-                        await resp.write(chunk)
+                async for chunk in upstream.content.iter_chunked(_CHUNK):
+                    if not stream_manager.is_active(entry_id, token):
+                        break
+                    await resp.write(chunk)
 
-                    await resp.write_eof()
-                    return resp
+                await resp.write_eof()
+                return resp
 
         except asyncio.CancelledError:
             # Client disconnected or playback was stopped — both are normal.
             _LOGGER.debug("Stream session stopped for %s", track_id)
 
-            # Re-raising lets aiohttp close the downstream response and the
-            # ClientSession context close the upstream Yandex connection.
+            # Re-raising lets aiohttp close the downstream response while the
+            # request context releases the upstream connection back to HA's
+            # shared connection pool.
             raise
         except Exception as err:
             _LOGGER.error("Streaming error for %s: %s", track_id, err)
